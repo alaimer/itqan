@@ -534,8 +534,15 @@ const DK = (() => {
     const pre = optAl ? '(?:[وف]?[بلك]?)' + (NEED_AL.includes(name) || NEED_AL2.includes(name) ? '(?:ال|ل)' : '(?:ال|ل)?') : '(?:[وف])?';
     return new RegExp('(^|[^\\u0621-\\u064A])' + pre + n.split(' ').map(reEsc).join('\\s*') + '(?=[^\\u0621-\\u064A]|$)', flags || '');
   }
-  const TRACK_ALT = { 'الطرق': ['الطرقات'] };
-  const NEED_AL2 = ['الطرقات'];
+  /* صيغ بديلة شائعة في عروض البلديات (المفرد، الصفة، والمسميات الفرعية الواضحة) */
+  const TRACK_ALT = {
+    'النظافة': ['النظافة العامة', 'الإصحاح البيئي', 'صحة البيئة', 'رفع المخلفات', 'النفايات', 'الكنس الآلي', 'نقل المخلفات'],
+    'المرافق': ['المرفق', 'المرافق العامة', 'دورات المياه العامة', 'المرافق البلدية'],
+    'الطرق': ['الطرقات', 'الطريق', 'السفلتة', 'الأرصفة', 'الرصيف', 'الحفريات', 'سفلتة', 'ترقيع'],
+    'الحدائق': ['الحديقة', 'المسطحات الخضراء', 'التشجير', 'المنتزهات', 'المتنزهات', 'الحدائق العامة'],
+    'الرقابة': ['الرقابية', 'الرقابي', 'الجولات الرقابية', 'الرقابة الصحية', 'الرقابة الميدانية']
+  };
+  const NEED_AL2 = ['الطرقات', 'الطريق', 'الرصيف', 'المرفق'];
   const TRX = TRACKS.map(t => { const rs = [t, ...(TRACK_ALT[t] || [])].map(v => wordRx(v, true)); return { t, re: { test: x => rs.some(r => r.test(x)) }, rs }; });
   /* قائمة البلديات الثابتة (أسماء فقط) تُستخدم عند عدم رفع ملف رصد؛ وإن رُفع ملف تُضاف أسماؤه */
   const BASE_MUNIS = ["محايل عسير", "المجاردة", "ظهران الجنوب", "الحرجة", "الحازمي", "النماص", "الساحل", "بلقرن", "البرك", "تنومة", "خميس مشيط", "الثنية وتباله", "احد رفيدة", "قنا", "صمخ", "الصبيخة", "الواديين", "بيشة", "بلحمر", "بلسمر", "البشائر", "بحر أبو سكينة", "بارق", "وادي بن هشبل", "النقيع", "سراة عبيدة", "الامواه", "الربوعة", "تثليث", "رجال المع", "الفرشة", "طريب", "بني عمرو"];
@@ -661,6 +668,7 @@ const DK = (() => {
       const doc = XMLP.parseFromString(xml, 'application/xml');
       const hidden = doc.documentElement.getAttribute('show') === '0';
       const text = byTag(doc, 'a:t').map(t => t.textContent).join(' ').replace(/\s+/g, ' ').trim();
+      const parts = byTag(doc, 'a:p').map(p => byTag(p, 'a:t').map(t => t.textContent).join('').trim()).filter(Boolean);
       const rels = relsMap(await zip.file(path.replace('slides/', 'slides/_rels/') + '.rels')?.async('string'));
       const pics = [];
       for (const blip of byTag(doc, 'a:blip')) {
@@ -674,7 +682,7 @@ const DK = (() => {
         if (fp && !media.has(fp)) media.set(fp, info.file);
         pics.push({ fp, inBg, external: !!rel?.external, fmt: (mp || rel?.target || '').split('.').pop().toLowerCase(), area: ext ? (ext.cx * ext.cy) / (SW * SH) : null, size: info?.size ?? null });
       }
-      raw.push({ n: i + 1, hidden, text, pics });
+      raw.push({ n: i + 1, hidden, text, parts, pics });
       onUnit(i + 1, order.length); if (i % 3 === 2) await yieldUI();
     }
     return { raw, total, truncated, getMedia: async fp => media.has(fp) ? media.get(fp).async('blob') : null };
@@ -996,6 +1004,10 @@ const DK = (() => {
     const fpSlides = new Map();
     visible.forEach(s => new Set(s.pics.map(p => p.fp).filter(Boolean)).forEach(fp => fpSlides.set(fp, (fpSlides.get(fp) || 0) + 1)));
     const repeatMin = Math.max(3, Math.ceil(visible.length * 0.25));
+    const partN = new Map();
+    visible.forEach(s => new Set((s.parts || []).map(norm)).forEach(t => partN.set(t, (partN.get(t) || 0) + 1)));
+    const tplMin = Math.max(4, Math.ceil(visible.length * 0.7));   // عنوان مسار حقيقي لا يتكرر في 70٪ من العرض لأن المسارات خمسة
+    const isTpl = t => visible.length >= 5 && (partN.get(norm(t)) || 0) >= tplMin;
     let section = null; const slides = [];
     for (const s of raw) {
       const evid = [], decor = [];
@@ -1010,7 +1022,8 @@ const DK = (() => {
         else if (p.size != null && p.size < 8000) why = 'حجم ملف الصورة صغير جدًا (' + Math.round(p.size / 1024) + ' ك.ب)';
         (why ? decor : evid).push(why ? { ...p, why } : p);
       }
-      const nt = norm(s.text), nr = norm([...s.text].reverse().join(''));
+      const dt = s.parts ? s.parts.filter(t => !isTpl(t)).join(' ') : s.text;
+      const nt = norm(dt), nr = norm([...dt].reverse().join(''));
       let found = TRX.filter(x => x.re.test(nt)).map(x => x.t);
       if (!found.length && R.reverseHint !== false) found = TRX.filter(x => x.re.test(nr)).map(x => x.t);   // نصوص PDF المقلوبة بصريًا
       const snippet = s.text.slice(0, 160);
@@ -1160,7 +1173,8 @@ const DK = (() => {
       const review = items.filter(x => ['inherited', 'ambiguous'].includes(x.s.kind) || (x.s.kind === 'section' && !x.s.followed) || x.s.kind === 'section2').length;
       const ov = per.overrides?.[name]?.[t] || '';
       const status = ov || (direct ? 'candidate' : review ? 'review' : 'none');
-      tracks[t] = { status, direct, review, items, override: ov };
+      const imgs = items.reduce((a, x) => a + (['evidence', 'inherited'].includes(x.s.kind) ? x.s.evid : x.s.kind === 'ambiguous' ? x.s.evid / x.s.tracks.length : 0), 0);
+      tracks[t] = { status, direct, review, items, override: ov, imgs: Math.round(imgs) };
     }
     const slides = ok.reduce((a, f) => a + f.slidesTotal, 0);
     const evid = ok.reduce((a, f) => a + f.slides.reduce((b, s) => b + (['evidence', 'inherited', 'ambiguous', 'photo-no-track'].includes(s.kind) ? s.evid : 0), 0), 0);
@@ -1359,7 +1373,7 @@ const DK = (() => {
     const per = P(); if (!per) return;
     const vs = views(per), reuse = reuseFlags(per), meta = [`إتقان — استلام العروض`, pLabel(per.key), `تاريخ التصدير: ${tFmt(now())}`, per.batchComplete ? 'الدفعة معلّمة مكتملة' : 'الدفعة غير معلّمة مكتملة', per.deadline ? 'موعد التسليم ' + per.deadline : 'بلا موعد تسليم'];
     const a1 = [meta, ['البلدية', 'حالة الاستلام والمراجعة', 'عدد الملفات', 'ملفات مقروءة', 'الشرائح', 'صور شواهد محتملة', 'عناصر تصميمية مستبعدة', ...TRACKS, 'حالة الرصد (مستنتجة من الرصد>0)', 'تطابق صور مع فترات/بلديات أخرى', 'الملفات']];
-    vs.forEach(v => a1.push([v.name, codeLabel(v, per), v.files.length, v.ok.length, v.files.length ? v.slides : '', v.files.length ? v.evid : '', v.files.length ? v.decor : '', ...TRACKS.map(t => v.ok.length ? TRACK_ST[v.tracks[t].status].l : ''), v.rasd.label, (reuse.get(v.name) || []).length || '', v.files.map(f => f.name).join(' | ')]));
+    vs.forEach(v => a1.push([v.name, codeLabel(v, per), v.files.length, v.ok.length, v.files.length ? v.slides : '', v.files.length ? v.evid : '', v.files.length ? v.decor : '', ...TRACKS.map(t => v.ok.length ? TRACK_ST[v.tracks[t].status].l + (v.tracks[t].imgs ? ` (${v.tracks[t].imgs} صورة)` : '') : ''), v.rasd.label, (reuse.get(v.name) || []).length || '', v.files.map(f => f.name).join(' | ')]));
     const a2 = [meta, ['البلدية', 'الملف', 'رقم الشريحة (ترتيب العرض)', 'التصنيف', 'المسارات', 'صور شواهد محتملة', 'عناصر تصميمية', 'سبب التصنيف', 'النص المرتبط']];
     const KL = { evidence: 'شاهد محتمل', inherited: 'شاهد تابع لقسم — مراجعة', ambiguous: 'مساران — مراجعة', section: 'شريحة مسار بلا صورة شاهد', section2: 'مساران بلا صورة', index: 'فهرس/عنوان', 'photo-no-track': 'صورة بلا مسار', other: 'أخرى', hidden: 'مخفية', missing: 'مفقودة' };
     per.files.filter(READABLE).forEach(f => f.slides.forEach(s => a2.push([f.muni || 'غير محددة', f.name, s.n, KL[s.kind] || s.kind, s.tracks.join('، '), s.evid, s.decor, s.reason, s.ctx || s.snippet])));
@@ -1380,7 +1394,7 @@ const DK = (() => {
     add('استلام العروض — الملخص', scope + `<div class="report-kpis">${box('وصلت ملفاتها', vs.filter(v => v.files.length).length + ' / ' + vs.length)}${box(nr.label, counts('not-received'))}${box('تحتاج مراجعة', counts('review') + counts('unreadable'))}${box('شواهد مكتملة مبدئيًا أو معتمدة', counts('complete') + counts('approved'))}</div><h3>${h(nr.label)}</h3><p>${vs.filter(v => v.code === 'not-received').map(v => h(v.name)).join('، ') || 'لا يوجد'}</p><h3>المسارات</h3><table><thead><tr><th>المسار</th><th>شاهد محتمل</th><th>معتمد يدويًا</th><th>يحتاج مراجعة</th><th>لا يوجد/مرفوض</th></tr></thead><tbody>${TRACKS.map(t => { const r = vs.filter(v => v.ok.length); const c = s => r.filter(v => v.tracks[t].status === s).length; return `<tr><td>${t}</td><td class="num">${c('candidate')}</td><td class="num">${c('approved')}</td><td class="num">${c('review')}</td><td class="num">${c('none') + c('rejected')}</td></tr>`; }).join('')}</tbody></table>`);
     const short = v => v.code === 'not-received' ? (nr.code === 'late' ? 'متأخرة' : 'لم يُستلم') : CODE_LABEL[v.code];
     const legend = `<p class="legend">● شاهد محتمل · ! يحتاج مراجعة · ✓ معتمد يدويًا · ✕ مرفوض يدويًا · — لا يوجد · لا ملف مقروء: فارغ. «لم يُستلم» = ${h(nr.label)}.</p>`;
-    const rows = vs.map(v => `<tr><td>${h(v.name)}</td><td>${h(short(v))}</td><td class="num">${v.files.length ? v.slides : ''}</td><td class="num">${v.files.length ? v.evid : ''}</td>${TRACKS.map(t => `<td style="text-align:center">${v.ok.length ? TRACK_ST[v.tracks[t].status].s : ''}</td>`).join('')}<td>${h(v.rasd.label.replace(' (مستنتج)', ''))}</td></tr>`);
+    const rows = vs.map(v => `<tr><td>${h(v.name)}</td><td>${h(short(v))}</td><td class="num">${v.files.length ? v.slides : ''}</td><td class="num">${v.files.length ? v.evid : ''}</td>${TRACKS.map(t => `<td style="text-align:center">${v.ok.length ? TRACK_ST[v.tracks[t].status].s + (v.tracks[t].imgs ? ' ' + v.tracks[t].imgs : '') : ''}</td>`).join('')}<td>${h(v.rasd.label.replace(' (مستنتج)', ''))}</td></tr>`);
     const N = 12;
     for (let i = 0; i < rows.length; i += N) add('استلام العروض — حالة البلديات ' + (i / N + 1), scope + legend + `<table><thead><tr><th style="width:17%">البلدية</th><th style="width:19%">الحالة</th><th>الشرائح</th><th>صور محتملة</th>${TRACKS.map(t => `<th style="text-align:center">${t}</th>`).join('')}<th style="width:12%">الرصد (مستنتج)</th></tr></thead><tbody>${rows.slice(i, i + N).join('')}</tbody></table>`);
   }
@@ -1415,8 +1429,8 @@ const DK = (() => {
     if (!v.files.length) return '<td class="dk-na">·</td>';
     if (!v.ok.length) return '<td class="dk-na">؟</td>';
     const x = v.tracks[t], st = TRACK_ST[x.status];
-    const tip = `${t}: ${st.l}${x.direct ? ` · ${x.direct} شريحة شاهد مباشر` : ''}${x.review ? ` · ${x.review} للمراجعة` : ''}`;
-    return `<td><button class="dk-tr ${st.c}" data-detail="${h(v.name)}" data-track="${t}" title="${h(tip)}" aria-label="${h(tip)}">${st.s}<small>${x.direct || x.review || ''}</small></button></td>`;
+    const tip = `${t}: ${st.l}${x.imgs ? ` · ${x.imgs} صورة` : ''}${x.direct ? ` · ${x.direct} شريحة شاهد مباشر` : ''}${x.review ? ` · ${x.review} للمراجعة` : ''}`;
+    return `<td><button class="dk-tr ${st.c}" data-detail="${h(v.name)}" data-track="${t}" title="${h(tip)}" aria-label="${h(tip)}">${st.s}<small>${x.imgs ? x.imgs + ' صورة' : x.review ? x.review + ' للمراجعة' : ''}</small></button></td>`;
   }
 
   function render() {
@@ -1522,7 +1536,7 @@ const DK = (() => {
   function openDetail(name, focusTrack) {
     const per = P(), v = muniView(per, name); dlgName = name;
     const KL = { evidence: ['شاهد محتمل', 'cand'], inherited: ['تابع لقسم — مراجعة', 'rev'], ambiguous: ['مساران — مراجعة', 'rev'], section: ['مسار بلا صورة شاهد', 'rev'], section2: ['مساران بلا صورة', 'rev'], index: ['فهرس/عنوان', 'none'], 'photo-no-track': ['صورة بلا مسار', 'rev'], other: ['أخرى', 'none'], hidden: ['مخفية', 'none'], missing: ['مفقودة', 'none'] };
-    const trackBlock = TRACKS.map(t => { const x = v.tracks[t], st = TRACK_ST[x.status]; return `<div class="dk-tblock${t === focusTrack ? ' focus' : ''}" id="dk-t-${t}"><div class="dk-thead"><span class="dk-tr ${st.c}">${st.s}</span><strong>${t}</strong><span class="hint">${st.l}${x.override ? ' (قرار يدوي)' : ''} · ${x.direct} مباشر · ${x.review} للمراجعة</span><span class="dk-ovbtns"><button class="btn sm ok" data-ov="approved" data-name="${h(name)}" data-track="${t}" ${x.override === 'approved' ? 'disabled' : ''}>اعتماد يدوي</button><button class="btn sm ghost" data-ov="rejected" data-name="${h(name)}" data-track="${t}" ${x.override === 'rejected' ? 'disabled' : ''}>رفض</button>${x.override ? `<button class="btn sm ghost" data-ov="" data-name="${h(name)}" data-track="${t}">إلغاء القرار</button>` : ''}</span></div>${x.items.length ? `<ul class="dk-slides">${x.items.map(({ f, s }) => `<li><span class="pill ${KL[s.kind][1]}">${KL[s.kind][0]}</span> <strong>ش${s.n}</strong> · ${bdi(f.name)}<div class="hint">${h(s.reason)}</div>${s.ctx ? `<div class="dk-ctx">«${h(s.ctx)}»</div>` : ''}${thumbs(f, s)}</li>`).join('')}</ul>` : '<p class="hint">لا توجد شرائح تذكر هذا المسار.</p>'}</div>`; }).join('');
+    const trackBlock = TRACKS.map(t => { const x = v.tracks[t], st = TRACK_ST[x.status]; return `<div class="dk-tblock${t === focusTrack ? ' focus' : ''}" id="dk-t-${t}"><div class="dk-thead"><span class="dk-tr ${st.c}">${st.s}</span><strong>${t}</strong><span class="hint">${st.l}${x.override ? ' (قرار يدوي)' : ''} · <b>${x.imgs} صورة</b> · ${x.direct} شريحة مباشرة · ${x.review} للمراجعة</span><span class="dk-ovbtns"><button class="btn sm ok" data-ov="approved" data-name="${h(name)}" data-track="${t}" ${x.override === 'approved' ? 'disabled' : ''}>اعتماد يدوي</button><button class="btn sm ghost" data-ov="rejected" data-name="${h(name)}" data-track="${t}" ${x.override === 'rejected' ? 'disabled' : ''}>رفض</button>${x.override ? `<button class="btn sm ghost" data-ov="" data-name="${h(name)}" data-track="${t}">إلغاء القرار</button>` : ''}</span></div>${x.items.length ? `<ul class="dk-slides">${x.items.map(({ f, s }) => `<li><span class="pill ${KL[s.kind][1]}">${KL[s.kind][0]}</span> <strong>ش${s.n}</strong> · ${bdi(f.name)}<div class="hint">${h(s.reason)}</div>${s.ctx ? `<div class="dk-ctx">«${h(s.ctx)}»</div>` : ''}${thumbs(f, s)}</li>`).join('')}</ul>` : '<p class="hint">لا توجد شرائح تذكر هذا المسار.</p>'}</div>`; }).join('');
     const files = v.files.map(f => `<details class="dk-file"><summary><strong>${bdi(f.name)}</strong> <span class="hint">${f.status === 'readable' ? `${f.slidesTotal} ${f.unit || 'شريحة'}${f.format ? ' · ' + h(f.format) : ''}${f.hiddenCount ? ` (${f.hiddenCount} مخفية)` : ''}${f.imagesUnknown ? ' · تعذّر تحديد صور الصفحات' : ''}` : h(f.error)} · ربط ${f.muniSource === 'manual' ? 'يدوي' : 'آلي من ' + h(f.detect?.source || '')}${f.truncated ? ' · حُلّلت أول ' + LIMITS.slides + ' شريحة فقط' : ''}${f.warnOtherPeriod ? ' · الملف نفسه موجود في ' + h(pLabel(f.warnOtherPeriod)) : ''}</span></summary>${f.detect?.note ? `<p class="hint">${h(f.detect.note)}</p>` : ''}<div class="dk-ract"><select data-assign-sel="${f.id}" aria-label="تغيير البلدية">${'<option value="">— بلا بلدية —</option>' + munis().map(n => `<option${n === f.muni ? ' selected' : ''}>${h(n)}</option>`).join('')}</select><button class="btn sm ghost" data-remove="${f.id}">حذف الملف من الفترة</button></div>${f.status === 'readable' ? `<div class="scroll tablewrap"><table class="dk-stable"><thead><tr><th>ش</th><th>التصنيف</th><th>المسارات</th><th>صور محتملة</th><th>تصميمية</th><th>السبب</th></tr></thead><tbody>${f.slides.map(s => `<tr><td class="num">${s.n}</td><td><span class="pill ${KL[s.kind]?.[1] || ''}">${KL[s.kind]?.[0] || h(s.kind)}</span></td><td>${s.tracks.join('، ') || '—'}</td><td class="num">${s.evid}</td><td class="num" title="${h(s.decorWhy.join(' · '))}">${s.decor}</td><td class="dk-why">${h(s.reason)}${s.decorWhy.length ? `<div class="hint">مستبعد: ${h(s.decorWhy.join(' · '))}</div>` : ''}</td></tr>`).join('')}</tbody></table></div>` : ''}</details>`).join('');
     const per2 = P();
     $('dk-dlg-title').textContent = name;
